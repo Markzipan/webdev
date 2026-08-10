@@ -33,36 +33,13 @@ const multiRootScheme = 'org-dartlang-app';
 
 /// A custom [SdkConfigurationProvider] that resolves the SDK directory
 /// using the `dartPath` from `util.dart`.
-///
-/// Uses dartdevc's AOT snapshot if running in AOT mode.
 class WebdevSdkConfigurationProvider extends SdkConfigurationProvider {
-  final bool useAotDdc;
-
-  const WebdevSdkConfigurationProvider({this.useAotDdc = false});
+  const WebdevSdkConfigurationProvider();
 
   @override
   Future<SdkConfiguration> get configuration async {
     final sdkDir = p.dirname(p.dirname(dartPath));
-    final defaultLayout = SdkLayout.createDefault(sdkDir);
-
-    if (!useAotDdc) {
-      return SdkConfiguration.fromSdkLayout(defaultLayout);
-    }
-
-    final aotSnapshotPath = p.join(
-      sdkDir,
-      'bin',
-      'snapshots',
-      'dartdevc_aot.dart.snapshot',
-    );
-
-    return SdkConfiguration.fromSdkLayout(
-      SdkLayout(
-        sdkDirectory: sdkDir,
-        summaryPath: defaultLayout.summaryPath,
-        dartdevcSnapshotPath: aotSnapshotPath,
-      ),
-    );
+    return SdkConfiguration.fromSdkLayout(SdkLayout.createDefault(sdkDir));
   }
 }
 
@@ -294,27 +271,6 @@ class WebDevServer {
         ).strategy;
       }
 
-      // Check that we're running from a compiled binary (like webdev.exe) and not
-      // from source or snapshot.
-      final isAotMode =
-          !Platform.script.path.endsWith('.dart') &&
-          !Platform.script.path.endsWith('.snapshot') &&
-          !Platform.script.path.endsWith('.dill');
-
-      var useAotDdc = false;
-      if (isAotMode) {
-        final sdkDir = p.dirname(p.dirname(dartPath));
-        final aotSnapshotPath = p.join(
-          sdkDir,
-          'bin',
-          'snapshots',
-          'dartdevc_aot.dart.snapshot',
-        );
-        if (await File(aotSnapshotPath).exists()) {
-          useAotDdc = true;
-        }
-      }
-
       if (options.configuration.enableExpressionEvaluation) {
         if (options.configuration.webHotReload &&
             !options.configuration.release) {
@@ -362,19 +318,12 @@ class WebDevServer {
               'isError': true,
             };
           });
-        } else if (isAotMode && !useAotDdc) {
-          _logger.warning(
-            'Expression evaluation will be disabled in AOT mode because '
-            'dartdevc_aot.dart.snapshot was not found in the SDK.',
-          );
         } else {
           ddcService = ExpressionCompilerService(
             options.configuration.hostname,
             options.port,
             verbose: options.configuration.verbose,
-            sdkConfigurationProvider: WebdevSdkConfigurationProvider(
-              useAotDdc: useAotDdc,
-            ),
+            sdkConfigurationProvider: const WebdevSdkConfigurationProvider(),
           );
         }
       }

@@ -141,10 +141,17 @@ class SdkConfiguration {
   void validateCompilerWorker({
     FileSystem fileSystem = const LocalFileSystem(),
   }) {
-    if (compilerWorkerPath == null ||
-        !fileSystem.file(compilerWorkerPath).existsSync()) {
+    if (sdkDirectory == null) {
+      throw InvalidSdkConfigurationException('Sdk directory is not set');
+    }
+    final dartExecutable = p.join(
+      sdkDirectory!,
+      'bin',
+      Platform.isWindows ? 'dart.exe' : 'dart',
+    );
+    if (!fileSystem.file(dartExecutable).existsSync()) {
       throw InvalidSdkConfigurationException(
-        'Compiler worker $compilerWorkerPath does not exist',
+        'Dart executable $dartExecutable does not exist',
       );
     }
   }

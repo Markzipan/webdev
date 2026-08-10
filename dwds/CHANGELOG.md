@@ -1,3 +1,6 @@
+## 28.1.0
+- **Internal**: Use DDC via Dart CLI instead of JIT snapshots.
+
 ## 28.0.0
 - **Breaking Change**: Removed `PackageUriMapper` in favor of **`PathResolver`** - with `BuildRunnerPathResolver`, `FrontendServerPathResolver`, and `FlutterPathResolver` impls.
 - **Breaking Change**: **`LoadStrategy`** implementors must now implement the **`assetScheme`** getter.

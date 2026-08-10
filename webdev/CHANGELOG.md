@@ -1,3 +1,7 @@
+## 4.2.0
+- **Internal**: Use DDC via Dart CLI instead of JIT snapshots.
+- Bump `dwds` constraint to `^28.1.0`.
+
 ## 4.1.0
 - Enable hot reload support in Frontend Server + Build Daemon mode.
 - Support expression evaluation in Frontend Server + Build Daemon mode via DaemonExpressionCompiler.

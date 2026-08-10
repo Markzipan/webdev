@@ -3,55 +3,49 @@
 // BSD-style license that can be found in the LICENSE file.
 
 import 'dart:async';
-import 'dart:isolate';
+import 'dart:convert';
+import 'dart:io';
 
 import 'package:async/async.dart';
 import 'package:dwds/src/services/expression_compiler.dart';
 import 'package:dwds/src/utilities/sdk_configuration.dart';
 import 'package:logging/logging.dart';
+import 'package:path/path.dart' as p;
+import 'package:pool/pool.dart';
 
 class _Compiler {
   static final _logger = Logger('ExpressionCompilerService');
-  final StreamQueue<dynamic> _responseQueue;
-  final ReceivePort _receivePort;
-  final SendPort _sendPort;
+  final StreamQueue<Map<String, dynamic>> _responseQueue;
+  final Process _process;
 
+  final _sendPool = Pool(1);
   Future<void>? _dependencyUpdate;
 
-  _Compiler._(this._responseQueue, this._receivePort, this._sendPort);
+  _Compiler._(this._responseQueue, this._process);
 
-  /// Sends [request] on [_sendPort] and returns the next event from the
+  /// Sends [request] on _process.stdin and returns the next event from the
   /// response stream.
   Future<Map<String, dynamic>> _send(Map<String, Object> request) async {
-    _sendPort.send(request);
-    if (!await _responseQueue.hasNext) {
-      return {
-        'succeeded': false,
-        'errors': ['compilation worker response stream closed'],
-      };
-    }
-    final response = await _responseQueue.next;
-    if (response is! Map<String, dynamic>) {
-      return {
-        'succeeded': false,
-        'errors': ['compilation worker returned invalid response: $response'],
-      };
-    }
-    return response;
+    return _sendPool.withResource(() async {
+      _process.stdin.writeln(jsonEncode(request));
+      await _process.stdin.flush();
+      if (!await _responseQueue.hasNext) {
+        return {
+          'succeeded': false,
+          'errors': ['compilation worker response stream closed'],
+        };
+      }
+      return await _responseQueue.next;
+    });
   }
 
   /// Starts expression compilation service.
   ///
-  /// Starts expression compiler worker in an isolate and creates the
+  /// Starts expression compiler worker as a subprocess using Dart CLI and creates the
   /// expression compilation service that communicates to the worker.
   ///
   /// [sdkConfiguration] describes the locations of SDK files used in
-  /// expression compilation (summaries, libraries spec, compiler worker
-  /// snapshot).
-  ///
-  /// Performs handshake with the isolate running expression compiler
-  /// worker to establish communication via send/receive ports, returns
-  /// the service after the communication is established.
+  /// expression compilation (summaries, libraries spec).
   ///
   /// Users need to stop the service by calling [stop].
   static Future<_Compiler> start(
@@ -64,10 +58,17 @@ class _Compiler {
     sdkConfiguration.validateSdkDir();
     sdkConfiguration.validateSummaries();
 
-    final workerUri = sdkConfiguration.compilerWorkerUri!;
     final sdkSummaryUri = sdkConfiguration.sdkSummaryUri!;
 
+    final dartExecutable = p.join(
+      sdkConfiguration.sdkDirectory!,
+      'bin',
+      Platform.isWindows ? 'dart.exe' : 'dart',
+    );
+
     final args = [
+      'compile',
+      'js-dev',
       '--experimental-expression-compiler',
       '--dart-sdk-summary',
       '$sdkSummaryUri',
@@ -84,24 +85,33 @@ class _Compiler {
     ];
 
     _logger.info('Starting...');
-    _logger.finest('$workerUri ${args.join(' ')}');
+    _logger.finest('$dartExecutable ${args.join(' ')}');
 
-    final receivePort = ReceivePort();
-    await Isolate.spawnUri(
-      workerUri,
-      args,
-      receivePort.sendPort,
-      // Note(annagrin): ddc snapshot is generated with no asserts, so we have
-      // to run it unchecked in case the calling isolate is checked, as it
-      // happens, for example, when debugging webdev in VSCode or running tests
-      // using 'dart run'
-      checked: false,
-    );
+    final process = await Process.start(dartExecutable, args);
 
-    final responseQueue = StreamQueue(receivePort);
-    final sendPort = await responseQueue.next as SendPort;
+    // Stream process errors to stderr or log them.
+    process.stderr.transform(utf8.decoder).listen((error) {
+      _logger.warning('Expression compiler worker error: $error');
+    });
 
-    final service = _Compiler._(responseQueue, receivePort, sendPort);
+    final responseStream = process.stdout
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .map((line) {
+          try {
+            return jsonDecode(line) as Map<String, dynamic>;
+          } catch (e) {
+            _logger.warning('Failed to decode response: $line', e);
+            return {
+              'succeeded': false,
+              'errors': ['Failed to decode response: $line'],
+            };
+          }
+        });
+
+    final responseQueue = StreamQueue(responseStream);
+
+    final service = _Compiler._(responseQueue, process);
 
     return service;
   }
@@ -190,8 +200,8 @@ class _Compiler {
   }
 
   String _createErrorMsg(Map<String, dynamic> response) {
-    final errors = response['errors'] as List<String>?;
-    if (errors != null && errors.isNotEmpty) return errors.first;
+    final errors = response['errors'] as List<dynamic>?;
+    if (errors != null && errors.isNotEmpty) return errors.first.toString();
 
     final e = response['exception'];
     final s = response['stackTrace'];
@@ -200,11 +210,12 @@ class _Compiler {
 
   /// Stops the service.
   ///
-  /// Terminates the isolate running expression compiler worker
+  /// Terminates the subprocess running expression compiler worker
   /// and marks the service as stopped.
-  void stop() {
-    _sendPort.send({'command': 'Shutdown'});
-    _receivePort.close();
+  Future<void> stop() async {
+    _process.stdin.writeln(jsonEncode({'command': 'Shutdown'}));
+    await _process.stdin.flush();
+    await _process.exitCode;
     _logger.info('Stopped.');
   }
 }
@@ -212,8 +223,8 @@ class _Compiler {
 /// Service that handles expression compilation requests.
 ///
 /// Expression compiler service spawns a dartdevc in expression compilation
-/// mode in an isolate and communicates with the isolate via send/receive
-/// ports. It also handles full dill file read requests from the isolate
+/// mode in a subprocess and communicates with it via stdin/stdout.
+/// It also handles full dill file read requests from the subprocess
 /// and redirects them to the asset server.
 ///
 /// Uses [_address] and [_port] to communicate and to redirect asset
@@ -221,7 +232,7 @@ class _Compiler {
 ///
 /// Configuration created by [sdkConfigurationProvider] describes the
 /// locations of SDK files used in expression compilation (summaries,
-/// libraries spec, compiler worker snapshot).
+/// libraries spec).
 ///
 /// Users need to stop the service by calling [stop].
 class ExpressionCompilerService implements ExpressionCompiler {
@@ -281,6 +292,8 @@ class ExpressionCompilerService implements ExpressionCompiler {
       (await _compiler.future).updateDependencies(modules);
 
   Future<void> stop() async {
-    if (_compiler.isCompleted) return (await _compiler.future).stop();
+    if (_compiler.isCompleted) {
+      await (await _compiler.future).stop();
+    }
   }
 }
