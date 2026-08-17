@@ -429,9 +429,11 @@ abstract class TestContext {
     // clear the state for next setup
     _webDriver = null;
     _chromeDriver = null;
+
     _testServer = null;
     _client = null;
     _outputDir = null;
+    lastBuildFailed = false;
   }
 
   /// Given a list of edits, use file IO to write them to the file system.
@@ -538,6 +540,9 @@ abstract class TestContext {
     return (request) {
       final path = request.url.path;
       if (path.endsWith(reloadedSourcesFileName)) {
+        if (lastBuildFailed) {
+          return shelf.Response.notFound('Build failed');
+        }
         return shelf.Response.ok(jsonEncode(reloadedSources));
       }
       return proxy(request);
@@ -551,6 +556,7 @@ abstract class TestContext {
   Future<void> waitForSuccessfulBuild({
     Duration? timeout,
     bool propagateToBrowser = false,
+    bool allowFailure = false,
   }) => throw UnsupportedError(
     'waitForSuccessfulBuild is only supported in Build Daemon mode',
   );
