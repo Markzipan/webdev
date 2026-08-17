@@ -33,14 +33,13 @@ void runTests({
   tearDownAll(provider.dispose);
 
   Future<void> recompile({bool hasEdits = false}) async {
-    if (context.usesFrontendServer) {
-      await context.recompile(fullRestart: true);
-    } else {
-      assert(context.usesBuildDaemon);
+    if (context.usesBuildDaemon) {
       if (hasEdits) {
         // Only gets a new build if there were edits.
         await context.waitForSuccessfulBuild();
       }
+    } else if (context.usesFrontendServer) {
+      await context.recompile(fullRestart: true);
     }
   }
 

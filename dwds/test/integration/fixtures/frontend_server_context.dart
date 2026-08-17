@@ -13,14 +13,13 @@ import 'package:dwds/src/loaders/strategy.dart';
 import 'package:dwds/src/utilities/server.dart';
 import 'package:dwds_test_common/fixtures/context.dart';
 import 'package:dwds_test_common/fixtures/utilities.dart';
+import 'package:dwds_test_common/frontend_server_common/asset_server.dart';
+import 'package:dwds_test_common/frontend_server_common/resident_runner.dart';
 import 'package:dwds_test_common/utilities.dart';
 import 'package:file/local.dart';
 import 'package:logging/logging.dart' as logging;
 import 'package:path/path.dart' as p;
 import 'package:shelf/shelf.dart';
-
-import '../../frontend_server_common/asset_server.dart';
-import '../../frontend_server_common/resident_runner.dart';
 
 class FrontendServerTestContext extends TestContext {
   ResidentWebRunner? _webRunner;
@@ -75,6 +74,7 @@ class FrontendServerTestContext extends TestContext {
       canaryFeatures: testSettings.canaryFeatures,
       isFlutterApp: testSettings.isFlutterApp,
       experiments: testSettings.experiments,
+      useDebuggerModuleNames: testSettings.useDebuggerModuleNames,
     );
 
     final filePathToServe = webCompatiblePath([
@@ -88,7 +88,7 @@ class FrontendServerTestContext extends TestContext {
       p.join(project.webAssetsPath, project.dartEntryFileName),
     );
     frontendServerFileSystem = const LocalFileSystem();
-    final packageUriMapper = await PackageUriMapper.create(
+    final packageUriMapper = await FrontendServerPathResolver.create(
       frontendServerFileSystem,
       project.packageConfigFile,
       useDebuggerModuleNames: testSettings.useDebuggerModuleNames,
@@ -130,33 +130,36 @@ class FrontendServerTestContext extends TestContext {
 
     _assetReader = webRunner.devFS!.assetServer;
 
-    _loadStrategy = switch (testSettings.moduleFormat) {
-      ModuleFormat.amd => FrontendServerRequireStrategyProvider(
+    _loadStrategy = switch ((
+      testSettings.moduleFormat,
+      buildSettings.canaryFeatures,
+    )) {
+      (ModuleFormat.amd, _) => FrontendServerRequireStrategyProvider(
         testSettings.reloadConfiguration,
-        assetReader,
+        _assetReader!,
         packageUriMapper,
         () async => {},
         buildSettings,
       ).strategy,
-      ModuleFormat.ddc =>
-        buildSettings.canaryFeatures
-            ? FrontendServerDdcLibraryBundleStrategyProvider(
-                testSettings.reloadConfiguration,
-                assetReader,
-                packageUriMapper,
-                () async => {},
-                buildSettings,
-                reloadedSourcesUri: reloadedSourcesUri,
-              ).strategy
-            : FrontendServerDdcStrategyProvider(
-                testSettings.reloadConfiguration,
-                assetReader,
-                packageUriMapper,
-                () async => {},
-                buildSettings,
-              ).strategy,
+      (ModuleFormat.ddc, true) =>
+        FrontendServerDdcLibraryBundleStrategyProvider(
+          testSettings.reloadConfiguration,
+          _assetReader!,
+          packageUriMapper,
+          () async => {},
+          buildSettings,
+          reloadedSourcesUri: reloadedSourcesUri,
+        ).strategy,
+      (ModuleFormat.ddc, false) => FrontendServerDdcStrategyProvider(
+        testSettings.reloadConfiguration,
+        _assetReader!,
+        packageUriMapper,
+        () async => {},
+        buildSettings,
+      ).strategy,
       _ => throw Exception(
-        'Unsupported DDC module format ${testSettings.moduleFormat.name}.',
+        'Unsupported DDC module format '
+        '${testSettings.moduleFormat.name}.',
       ),
     };
   }
