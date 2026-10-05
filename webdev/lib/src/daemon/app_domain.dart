@@ -11,6 +11,7 @@ import 'package:dwds/dwds.dart';
 import 'package:vm_service/vm_service.dart';
 import 'package:vm_service/vm_service_io.dart';
 
+import '../serve/frontend_server/frontend_server_compiler.dart';
 import '../serve/server_manager.dart';
 import '../serve/webdev_server.dart';
 import 'daemon.dart';
@@ -175,8 +176,13 @@ class AppDomain extends Domain {
       throw ArgumentError.value(appId, 'appId', 'Not found');
     }
     final fullRestart = getBoolArg(args, 'fullRestart') ?? false;
+    final server = _serversByAppId[appId];
+    final compiler = server?.compiler;
     if (!fullRestart) {
-      return {'code': 1, 'message': 'hot reload not yet supported by webdev'};
+      if (compiler == null) {
+        return {'code': 1, 'message': 'hot reload not yet supported by webdev'};
+      }
+      return _hotReload(appId!, appState, compiler);
     }
     // TODO(grouma) - Support pauseAfterRestart.
     // var pauseAfterRestart = getBoolArg(args, 'pause') ?? false;
@@ -191,12 +197,22 @@ class AppDomain extends Domain {
     final restartMethod =
         _registeredMethodsForService['hotRestart'] ?? 'hotRestart';
 
-    final server = _serversByAppId[appId];
-    server?.clearReloadedSources();
+    if (compiler == null) {
+      server?.clearReloadedSources();
+    } else if (!await compiler.update(forRestart: true)) {
+      sendEvent('app.progress', {
+        'appId': appId,
+        'id': '$_progressEventId',
+        'finished': true,
+        'progressId': 'hot.restart',
+      });
+      return {'code': 1, 'message': _compileErrorMessage};
+    }
 
     final response = await appState.vmService!.callServiceExtension(
       restartMethod,
     );
+    if (response.type == 'Success') compiler?.hotReloadRejection = null;
     sendEvent('app.progress', {
       'appId': appId,
       'id': '$_progressEventId',
@@ -211,6 +227,49 @@ class AppDomain extends Domain {
       'code': response.type == 'Success' ? 0 : 1,
       'message': response.toString(),
     };
+  }
+
+  static const _compileErrorMessage = 'Failed to recompile application.';
+
+  Future<Map<String, dynamic>> _hotReload(
+    String appId,
+    _AppState appState,
+    FrontendServerCompiler compiler,
+  ) async {
+    final stopwatch = Stopwatch()..start();
+    final progressId = '${++_progressEventId}';
+    sendEvent('app.progress', {
+      'appId': appId,
+      'id': progressId,
+      'message': 'Performing hot reload...',
+      'progressId': 'hot.reload',
+    });
+    try {
+      if (!await compiler.update()) {
+        return {'code': 1, 'message': _compileErrorMessage};
+      }
+      final rejection = compiler.hotReloadRejection;
+      if (rejection != null) return {'code': 1, 'message': rejection};
+
+      final vmService = appState.vmService!;
+      final vm = await vmService.getVM();
+      final report = await vmService.reloadSources(vm.isolates!.first.id!);
+      if (report.success != true) {
+        return {'code': 1, 'message': 'Hot reload failed: ${report.json}'};
+      }
+    } finally {
+      sendEvent('app.progress', {
+        'appId': appId,
+        'id': progressId,
+        'finished': true,
+        'progressId': 'hot.reload',
+      });
+    }
+    sendEvent('app.log', {
+      'appId': appId,
+      'log': 'Reloaded application in ${stopwatch.elapsedMilliseconds}ms',
+    });
+    return {'code': 0, 'message': ''};
   }
 
   Future<bool> _stop(Map<String, dynamic> args) async {

@@ -33,8 +33,10 @@ Automatically performs an action after each build:
 
 restart: Reload modules and re-invoke main (loses current state)
 refresh: Performs a full page refresh.
+reload: Hot reload modules and keep the current state (requires
+        --web-hot-reload)
 ''',
-      allowed: ['restart', 'refresh'],
+      allowed: ['restart', 'refresh', 'reload'],
     )
     ..addFlag(
       debugFlag,
@@ -125,6 +127,7 @@ refresh: Performs a full page refresh.
 
   ServeCommand() {
     addSharedArgs(argParser, releaseDefault: false);
+    addWebHotReloadFlag(argParser);
   }
 
   @override
@@ -143,8 +146,18 @@ refresh: Performs a full page refresh.
     }
     // Forward remaining arguments as Build Options to the Daemon.
     // This isn't documented. Should it be advertised?
+    final extraBuildOptions = argResults!.rest
+        .where((arg) => arg.startsWith('-'))
+        .toList();
+    if (configuration.webHotReload && extraBuildOptions.isNotEmpty) {
+      logWriter(
+        Level.WARNING,
+        'Ignoring build_runner options with --$webHotReloadFlag: '
+        '${extraBuildOptions.join(' ')}',
+      );
+    }
     final buildOptions = buildRunnerArgs(configuration)
-      ..addAll(argResults!.rest.where((arg) => arg.startsWith('-')).toList());
+      ..addAll(extraBuildOptions);
     final extraArgs = argResults?.rest ?? [];
     final directoryArgs = extraArgs
         .where((arg) => !arg.startsWith('-'))

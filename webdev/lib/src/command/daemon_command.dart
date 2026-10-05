@@ -57,6 +57,7 @@ class DaemonCommand extends Command<int> {
 
   DaemonCommand() {
     addSharedArgs(argParser, releaseDefault: false);
+    addWebHotReloadFlag(argParser);
   }
 
   @override

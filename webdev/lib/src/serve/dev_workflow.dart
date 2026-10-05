@@ -63,7 +63,7 @@ String _uriForLaunchApp(String launchApp, ServerManager serverManager) {
 Future<Chrome?> _startChrome(
   Configuration configuration,
   ServerManager serverManager,
-  BuildDaemonClient client,
+  BuildDaemonClient? client,
 ) async {
   final uris = [
     if (configuration.launchApps.isEmpty)
@@ -88,7 +88,7 @@ Future<Chrome?> _startChrome(
     }
   } on ChromeError {
     await serverManager.stop();
-    await client.close();
+    await client?.close();
     rethrow;
   }
   return null;
@@ -98,9 +98,9 @@ Future<ServerManager> _startServerManager(
   Configuration configuration,
   Map<String, int> targetPorts,
   String workingDirectory,
-  BuildDaemonClient client,
+  BuildDaemonClient? client,
 ) async {
-  final assetPort = daemonPort(workingDirectory);
+  final assetPort = client == null ? 0 : daemonPort(workingDirectory);
   final serverOptions = <ServerOptions>{};
   for (final target in targetPorts.keys) {
     serverOptions.add(
@@ -110,7 +110,7 @@ Future<ServerManager> _startServerManager(
   logWriter(logging.Level.INFO, 'Starting resource servers...');
   final serverManager = await ServerManager.start(
     serverOptions,
-    client.buildResults,
+    client?.buildResults ?? const Stream.empty(),
   );
 
   for (final server in serverManager.servers) {
@@ -175,9 +175,12 @@ void _registerBuildTargets(
 ///
 /// Connects to the Build Daemon, creates servers, launches Chrome and wires up
 /// the DevTools.
+///
+/// With [Configuration.webHotReload], compile with the Frontend Server instead
+/// of Build Daemon.
 class DevWorkflow {
   final _doneCompleter = Completer();
-  final BuildDaemonClient _client;
+  final BuildDaemonClient? _client;
   final Chrome? _chrome;
 
   final ServerManager serverManager;
@@ -186,7 +189,9 @@ class DevWorkflow {
   final _wrapWidth = stdout.hasTerminal ? stdout.terminalColumns - 8 : 72;
 
   DevWorkflow._(this._client, this._chrome, this.serverManager) {
-    _resultsSub = _client.buildResults.listen((data) {
+    final client = _client;
+    if (client == null) return;
+    _resultsSub = client.buildResults.listen((data) {
       if (data.results.any(
         (result) =>
             result.status == BuildStatus.failed ||
@@ -195,7 +200,7 @@ class DevWorkflow {
         logWriter(logging.Level.INFO, '${'-' * _wrapWidth}\n');
       }
     });
-    _client.shutdownNotifications.listen((data) {
+    client.shutdownNotifications.listen((data) {
       logWriter(logging.Level.WARNING, data.message);
       if (data.failureType == 75) {
         logWriter(logging.Level.WARNING, 'Please restart WebDev.\n');
@@ -212,11 +217,14 @@ class DevWorkflow {
     Map<String, int> targetPorts,
   ) async {
     final workingDirectory = Directory.current.path;
-    final client = await _startBuildDaemon(workingDirectory, buildOptions);
-    logWriter(logging.Level.INFO, 'Registering build targets...');
-    _registerBuildTargets(client, configuration, targetPorts);
-    logWriter(logging.Level.INFO, 'Starting initial build...');
-    client.startBuild();
+    BuildDaemonClient? client;
+    if (!configuration.webHotReload) {
+      client = await _startBuildDaemon(workingDirectory, buildOptions);
+      logWriter(logging.Level.INFO, 'Registering build targets...');
+      _registerBuildTargets(client, configuration, targetPorts);
+      logWriter(logging.Level.INFO, 'Starting initial build...');
+      client.startBuild();
+    }
     final serverManager = await _startServerManager(
       configuration,
       targetPorts,
@@ -230,7 +238,7 @@ class DevWorkflow {
   Future<void> shutDown() async {
     await _resultsSub?.cancel();
     await _chrome?.close();
-    await _client.close();
+    await _client?.close();
     await serverManager.stop();
     if (!_doneCompleter.isCompleted) _doneCompleter.complete();
   }

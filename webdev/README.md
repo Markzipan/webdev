@@ -44,7 +44,10 @@ Usage: webdev serve [arguments] [<directory>[:<port>]]...
                                            main (loses current state)
                                            refresh: Performs a full page
                                            refresh.
-                                           [restart, refresh]
+                                           reload: Hot reload modules and keep
+                                           the current state (requires
+                                           --web-hot-reload)
+                                           [restart, refresh, reload]
     --[no-]debug                           Enable the launching of DevTools (Alt
                                            + D / Option + D). This also enables
                                            --launch-in-chrome.
@@ -128,6 +131,22 @@ Common:
 Run "webdev help" to see global options.
 
 ```
+
+#### Web hot reload (experimental)
+
+With `--web-hot-reload`, `webdev serve` compiles apps with the Frontend Server
+instead of `build_runner`, which supports hot reload, expression eval, and hot
+restart.
+
+```console
+$ dart run build_runner watch  # If generated code is used
+$ webdev serve --web-hot-reload --auto=reload
+```
+
+- Only development builds are supported (no `--release` or `--output`).
+- Each served app needs a `main.dart` entrypoint.
+- Code generators must write to the package (`build_to: source`). Extra
+  `build_runner` arguments are ignored.
 
 ### `webdev build`
 

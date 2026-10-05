@@ -38,7 +38,10 @@ const offlineFlag = 'offline';
 const webHotReloadFlag = 'web-hot-reload';
 const deprecatedJsInteropFlag = 'deprecated-js-interop';
 
-ReloadConfiguration _parseReloadConfiguration(ArgResults argResults) {
+ReloadConfiguration _parseReloadConfiguration(
+  ArgResults argResults, {
+  required bool webHotReload,
+}) {
   var auto = argResults.options.contains(autoOption)
       ? argResults[autoOption] as String?
       : null;
@@ -70,6 +73,7 @@ ReloadConfiguration _parseReloadConfiguration(ArgResults argResults) {
 
   switch (auto) {
     case 'reload':
+      if (webHotReload) return ReloadConfiguration.hotReload;
       logWriter(
         Level.WARNING,
         'Hot reload is not yet supported for web projects. '
@@ -213,6 +217,12 @@ class Configuration {
       if (!canaryFeatures) {
         throw InvalidConfiguration(
           'Flag "$webHotReloadFlag" requires --$canaryFeaturesFlag.',
+        );
+      }
+      if (release || outputPath != null) {
+        throw InvalidConfiguration(
+          'Flag "$webHotReloadFlag" cannot be used with --$releaseFlag or '
+          '--$outputFlag.',
         );
       }
     }
@@ -532,7 +542,10 @@ class Configuration {
       outputInput: outputInput,
       outputPath: outputPath,
       release: release,
-      reload: _parseReloadConfiguration(argResults),
+      reload: _parseReloadConfiguration(
+        argResults,
+        webHotReload: webHotReload ?? false,
+      ),
       requireBuildWebCompilers: requireBuildWebCompilers,
       disableDds: disableDds,
       enableExpressionEvaluation: enableExpressionEvaluation,

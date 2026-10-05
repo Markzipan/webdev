@@ -3,6 +3,7 @@
 // BSD-style license that can be found in the LICENSE file.
 
 import 'package:args/args.dart';
+import 'package:dwds/dwds.dart' show ReloadConfiguration;
 import 'package:test/test.dart';
 import 'package:webdev/src/command/configuration.dart';
 import 'package:webdev/src/command/shared.dart';
@@ -226,5 +227,44 @@ void main() {
         );
       });
     }
+  });
+
+  group('--web-hot-reload', () {
+    setUp(() {
+      addWebHotReloadFlag(argParser);
+      argParser.addOption(autoOption);
+    });
+
+    Configuration parse(List<String> args) => Configuration.fromArgs(
+      argParser.parse(['--web-hot-reload', '--no-release', ...args]),
+    );
+
+    test('uses the DDC library bundle format', () {
+      final config = parse([]);
+      expect(config.webHotReload, isTrue);
+      expect(config.usesDdcLibraryBundle, isTrue);
+    });
+
+    test('coerces the module format and canary mode', () {
+      final config = parse(['--module-format=amd', '--no-canary']);
+      expect(config.moduleFormat, equals('ddc'));
+      expect(config.canaryFeatures, isTrue);
+    });
+
+    test('cannot be used with --release or --output', () {
+      expect(() => parse(['--release']), throwsA(isA<InvalidConfiguration>()));
+      expect(
+        () => parse(['--output=web:build']),
+        throwsA(isA<InvalidConfiguration>()),
+      );
+    });
+
+    test('supports --auto=reload', () {
+      expect(parse(['--auto=reload']).reload, ReloadConfiguration.hotReload);
+      expect(
+        Configuration.fromArgs(argParser.parse(['--auto=reload'])).reload,
+        ReloadConfiguration.none,
+      );
+    });
   });
 }

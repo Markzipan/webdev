@@ -10,6 +10,8 @@ import 'package:build_daemon/data/build_status.dart' as daemon;
 import 'package:dwds/data/build_result.dart';
 import 'package:dwds/dwds.dart';
 import 'package:file/local.dart';
+import 'package:frontend_server_client/frontend_server_client.dart'
+    show DdcLibraryBundleSdkAssets;
 import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
 import 'package:http_multi_server/http_multi_server.dart';
@@ -22,6 +24,8 @@ import 'package:shelf_proxy/shelf_proxy.dart';
 import '../command/configuration.dart';
 import '../util.dart';
 import 'chrome.dart';
+import 'frontend_server/app_handler.dart';
+import 'frontend_server/frontend_server_compiler.dart';
 import 'handlers/favicon_handler.dart';
 import 'utils.dart' show findPackageConfigFilePath, findPackageConfigUri;
 
@@ -32,7 +36,7 @@ const jsLibraryBundleExtension = '.ddc.js';
 const multiRootScheme = 'org-dartlang-app';
 
 /// A custom [SdkConfigurationProvider] that resolves the SDK directory
-/// using the `dartPath` from `util.dart`.
+/// using the `sdkDir` from `util.dart`.
 ///
 /// Uses dartdevc's AOT snapshot if running in AOT mode.
 class WebdevSdkConfigurationProvider extends SdkConfigurationProvider {
@@ -42,7 +46,6 @@ class WebdevSdkConfigurationProvider extends SdkConfigurationProvider {
 
   @override
   Future<SdkConfiguration> get configuration async {
-    final sdkDir = p.dirname(p.dirname(dartPath));
     final defaultLayout = SdkLayout.createDefault(sdkDir);
 
     if (!useAotDdc) {
@@ -87,6 +90,9 @@ class WebDevServer {
 
   final ExpressionCompilerService? ddcService;
 
+  /// Compiles with [compiler] or build daemon if not set.
+  final FrontendServerCompiler? compiler;
+
   final String target;
 
   /// The list of reloaded sources for DDC's Library Bundle module system,
@@ -107,6 +113,7 @@ class WebDevServer {
     this.reloadedSources, {
     this.dwds,
     this.ddcService,
+    this.compiler,
   }) {
     if (autoRun) {
       dwds?.connectedApps.listen((connection) {
@@ -124,6 +131,7 @@ class WebDevServer {
   Future<void> stop() async {
     await dwds?.stop();
     await ddcService?.stop();
+    await compiler?.dispose();
     await _server.close(force: true);
     _client.close();
   }
@@ -166,6 +174,10 @@ class WebDevServer {
     /// the app.
     final reloadedSources = <Map<String, dynamic>>[];
 
+    final compiler = options.configuration.webHotReload
+        ? await _startFrontendServer(options)
+        : null;
+
     // Only provide relevant build results
     final filteredBuildResults = buildResults.asyncMap<BuildResult>((results) {
       if (options.configuration.usesDdcLibraryBundle) {
@@ -205,18 +217,25 @@ class WebDevServer {
         ..idleTimeout = const Duration(seconds: 30)
         ..connectionTimeout = const Duration(seconds: 30),
     );
-    final assetHandler = proxyHandler(
-      'http://localhost:${options.daemonPort}/${options.target}/',
-      client: client,
-    );
+    final assetHandler = compiler != null
+        ? FrontendServerAppHandler(
+            compiler,
+            await _sdkWebAssets,
+            target: options.target,
+            reloadedSourcesPath: reloadedSourcesFileName,
+            injectedClient: options.configuration.enableInjectedClient,
+          ).call
+        : proxyHandler(
+            'http://localhost:${options.daemonPort}/${options.target}/',
+            client: client,
+          );
 
     Dwds? dwds;
     ExpressionCompilerService? ddcService;
     if (options.configuration.enableInjectedClient) {
-      final assetReader = ProxyServerAssetReader(
-        options.daemonPort,
-        root: options.target,
-      );
+      final assetReader = compiler != null
+          ? InMemoryAssetReader(compiler)
+          : ProxyServerAssetReader(options.daemonPort, root: options.target);
 
       // TODO(https://github.com/flutter/devtools/issues/5350): Figure out how
       // to determine the build settings from the build.
@@ -248,7 +267,6 @@ class WebDevServer {
           buildSettings,
           packageConfigPath: findPackageConfigFilePath(),
           reloadedSourcesUri: Uri.parse('$basePath/$reloadedSourcesFileName'),
-          injectScriptLoad: false,
         ).strategy;
       } else {
         if (options.configuration.moduleFormat == 'ddc') {
@@ -278,7 +296,6 @@ class WebDevServer {
 
       var useAotDdc = false;
       if (isAotMode) {
-        final sdkDir = p.dirname(p.dirname(dartPath));
         final aotSnapshotPath = p.join(
           sdkDir,
           'bin',
@@ -290,14 +307,19 @@ class WebDevServer {
         }
       }
 
+      ExpressionCompiler? expressionCompiler;
       if (options.configuration.enableExpressionEvaluation) {
-        if (isAotMode && !useAotDdc) {
+        if (compiler != null) {
+          expressionCompiler = FrontendServerExpressionCompiler(
+            compiler.client,
+          );
+        } else if (isAotMode && !useAotDdc) {
           _logger.warning(
             'Expression evaluation will be disabled in AOT mode because '
             'dartdevc_aot.dart.snapshot was not found in the SDK.',
           );
         } else {
-          ddcService = ExpressionCompilerService(
+          expressionCompiler = ddcService = ExpressionCompilerService(
             options.configuration.hostname,
             options.port,
             verbose: options.configuration.verbose,
@@ -317,7 +339,7 @@ class WebDevServer {
           enable: !options.configuration.disableDds,
           serveDevTools: shouldServeDevTools,
         ),
-        expressionCompiler: ddcService,
+        expressionCompiler: expressionCompiler,
       );
 
       final appMetadata = AppMetadata(hostname: options.configuration.hostname);
@@ -330,13 +352,14 @@ class WebDevServer {
       dwds = await Dwds.start(
         toolConfiguration: toolConfiguration,
         assetReader: assetReader,
-        buildResults: filteredBuildResults,
+        buildResults: compiler?.buildResults ?? filteredBuildResults,
         chromeConnection: () async =>
             (await Chrome.connectedInstance).chromeConnection,
       );
       pipeline = pipeline.addMiddleware(dwds.middleware);
       cascade = cascade.add(dwds.handler);
-      if (options.configuration.usesDdcLibraryBundle) {
+      // The Frontend Server's app handler serves the reloaded sources itself.
+      if (options.configuration.usesDdcLibraryBundle && compiler == null) {
         // Add a handler to serve reloaded sources.
         cascade = cascade.add((Request request) {
           if (request.url.path == reloadedSourcesFileName) {
@@ -383,14 +406,51 @@ class WebDevServer {
       server,
       client,
       protocol,
-      filteredBuildResults,
+      compiler?.buildResults ?? filteredBuildResults,
       options.configuration.autoRun,
       reloadedSources,
       dwds: dwds,
       ddcService: ddcService,
+      compiler: compiler,
+    );
+  }
+
+  /// Compiles `<target>/main.dart` with the Frontend Server.
+  static Future<FrontendServerCompiler> _startFrontendServer(
+    ServerOptions options,
+  ) async {
+    final target = options.target;
+    final packageRoot = p.current;
+    if (!File(p.join(packageRoot, target, 'main.dart')).existsSync()) {
+      throw InvalidConfiguration(
+        '(--$webHotReloadFlag) Cannot find `$target/main.dart`',
+      );
+    }
+    final packageConfigPath = findPackageConfigFilePath();
+    if (packageConfigPath == null) {
+      throw InvalidConfiguration(
+        'No .dart_tool/package_config.json found. Run `dart pub get` first.',
+      );
+    }
+    return FrontendServerCompiler.start(
+      packageRoot: packageRoot,
+      entrypoint: '$target/main.dart',
+      packageConfigPath: packageConfigPath,
+      sdkDir: sdkDir,
+      outputDir: p.join(_webdevToolDir, 'frontend_server', target),
+      experiments: options.configuration.experiments,
+      deprecatedJsInterop: options.configuration.deprecatedJsInterop,
+      autoHotReload:
+          options.configuration.reload == ReloadConfiguration.hotReload,
     );
   }
 }
+
+/// The directory for webdev's output files.
+final _webdevToolDir = p.join(p.current, '.dart_tool', 'webdev');
+
+final Future<DdcLibraryBundleSdkAssets> _sdkWebAssets =
+    DdcLibraryBundleSdkAssets.load(sdkRoot: sdkDir);
 
 /// Transforms a package:build JS asset id [uri] into a source url compatible
 /// with DDC's bootstrapper.

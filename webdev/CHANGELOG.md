@@ -6,6 +6,8 @@
   evaluation. When not set, the Dart SDK default is used. Requires a Dart SDK
   that supports the flag and `build_web_compilers` 4.9.0 or later.
 - Require `package:dwds` `^27.2.0`.
+- `--web-hot-reload` (experimental) compiles with Frontend Server, supporting hot reload but not build_web_compilers.
+- Add a dependency on `frontend_server_client`.
 
 ## 4.0.3
 

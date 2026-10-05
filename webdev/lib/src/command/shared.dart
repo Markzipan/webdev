@@ -68,13 +68,6 @@ void addSharedArgs(
       help: 'Enable experiment features in the debugger.',
     )
     ..addFlag(
-      webHotReloadFlag,
-      defaultsTo: false,
-      negatable: true,
-      hide: true,
-      help: 'Enables web hot reload.',
-    )
-    ..addFlag(
       canaryFeaturesFlag,
       abbr: 'c',
       defaultsTo: true,
@@ -160,24 +153,7 @@ List<String> buildRunnerArgs(Configuration configuration) {
     arguments.add('--enable-experiment=$experiment');
   }
 
-  if (configuration.webHotReload) {
-    arguments
-      ..add('--define')
-      ..add('build_web_compilers|sdk_js=web-hot-reload=true');
-    arguments
-      ..add('--define')
-      ..add('build_web_compilers|entrypoint=web-hot-reload=true');
-    arguments
-      ..add('--define')
-      ..add('build_web_compilers|entrypoint_marker=web-hot-reload=true');
-    arguments
-      ..add('--define')
-      ..add('build_web_compilers|ddc=web-hot-reload=true');
-    arguments
-      ..add('--define')
-      ..add('build_web_compilers|ddc_modules=web-hot-reload=true');
-  }
-  if (configuration.webHotReload || configuration.moduleFormat == 'ddc') {
+  if (configuration.moduleFormat == 'ddc') {
     arguments
       ..add('--define')
       ..add('build_web_compilers|ddc=ddc-library-bundle=true');
@@ -197,8 +173,20 @@ List<String> buildRunnerArgs(Configuration configuration) {
   return arguments;
 }
 
+void addWebHotReloadFlag(ArgParser argParser) {
+  argParser.addFlag(
+    webHotReloadFlag,
+    defaultsTo: false,
+    negatable: true,
+    hide: true,
+    help: 'Enables web hot reload.',
+  );
+}
+
 Future<void> validatePubspecLock(Configuration configuration) async {
   final pubspecLock = await PubspecLock.read(offline: configuration.offline);
+  // Frontend Server doesn't use package:build.
+  if (configuration.webHotReload) return;
   await checkPubspecLock(
     pubspecLock,
     requireBuildWebCompilers: configuration.requireBuildWebCompilers,
